@@ -23,6 +23,16 @@ pub fn init_port(
 ) -> Result<()> {
     // make sure that the port is on the correct socket
     let port_info = service().port_info(port_id)?;
+    println!(
+        "port {} mac addr {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        port_id,
+        port_info.eth_addr[0],
+        port_info.eth_addr[1],
+        port_info.eth_addr[2],
+        port_info.eth_addr[3],
+        port_info.eth_addr[4],
+        port_info.eth_addr[5]
+    );
     if port_info.socket_id != socket_id {
         return Err(Error::service_err("invalid socket id"));
     }

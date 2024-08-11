@@ -16,16 +16,16 @@ use run_dpdk::*;
 
 // Another test it seems that pcie 3.0 and 4.0 have no significant differences
 // nbcore      1         2        3        4          14       18
-// run         16.80   27.94    30.94     
-// smoltcp     12.63   24.91    30.22    30.05                 
+// run         16.80   27.94    30.94
+// smoltcp     12.63   24.91    30.22    30.05
 
 // The socket to work on
 const WORKING_SOCKET: u32 = 1;
-const THREAD_NUM: u32 = 2;
+const THREAD_NUM: u32 = 1;
 const START_CORE: usize = 33;
 
 // dpdk batch size
-const BATCH_SIZE: usize = 64;
+const BATCH_SIZE: usize = 32;
 
 // Basic configuration of the mempool
 const MBUF_CACHE: u32 = 256;
@@ -33,14 +33,14 @@ const MBUF_NUM: u32 = MBUF_CACHE * 32 * THREAD_NUM;
 const MP_NAME: &str = "wtf";
 
 // Basic configuration of the port
-const PORT_ID: u16 = 0;
+const PORT_ID: u16 = 1;
 const TXQ_DESC_NUM: u16 = 1024;
 const RXQ_DESC_NUM: u16 = 1024;
 
 // header info
-const DMAC: [u8; 6] = [0x40, 0xa6, 0xb7, 0x60, 0xa2, 0xb1];
-const SMAC: [u8; 6] = [0x40, 0xa6, 0xb7, 0x60, 0xa5, 0xf8];
-const DIP: [u8; 4] = [192, 168, 22, 2];
+const DMAC: [u8; 6] = [0x08, 0x68, 0x8d, 0x61, 0x6b, 0xf8];
+const SMAC: [u8; 6] = [0x40, 0xa6, 0xb7, 0x60, 0xa2, 0xb1];
+const DIP: [u8; 4] = [1, 1, 2, 2];
 const SPORT: u16 = 60376;
 const DPORT: u16 = 161;
 const NUM_FLOWS: usize = 8192;
@@ -99,10 +99,10 @@ fn entry_func() {
             let mut rxq = service().rx_queue(PORT_ID, i as u16).unwrap();
             let mut txq = service().tx_queue(PORT_ID, i as u16).unwrap();
             let mut batch = ArrayVec::<_, BATCH_SIZE>::new();
+            let mut o_batch = ArrayVec::<_, BATCH_SIZE>::new();
 
             let mut tx_of_flag = MbufTxOffload::ALL_DISABLED;
             tx_of_flag.enable_ip_cksum();
-            tx_of_flag.enable_udp_cksum();
 
             let ip_addrs = IP_ADDRS.get().unwrap();
             let mut adder: usize = 0;
@@ -110,7 +110,7 @@ fn entry_func() {
             while run_clone.load(Ordering::Acquire) {
                 rxq.rx(&mut batch);
 
-                for mbuf in batch.iter_mut() {
+                for mut mbuf in batch.drain(..) {
                     if let Ok(mut ethpkt) = wire::EthernetFrame::new_checked(mbuf.data_mut()) {
                         if ethpkt.ethertype() == wire::EthernetProtocol::Ipv4 {
                             if let Ok(mut ippkt) =
@@ -119,7 +119,7 @@ fn entry_func() {
                                 if ippkt.protocol() == wire::IpProtocol::Udp {
                                     if let Ok(mut udppkt) =
                                         wire::UdpPacket::new_checked(ippkt.payload_mut())
-                                    {
+                                    {                                        
                                         udppkt.set_dst_port(DPORT);
                                         udppkt.set_src_port(SPORT);
 
@@ -136,6 +136,8 @@ fn entry_func() {
                                         mbuf.set_tx_offload(tx_of_flag);
                                         mbuf.set_l2_len(14 as u64);
                                         mbuf.set_l3_len(ip_hdr_len as u64);
+
+                                        o_batch.push(mbuf);
                                     }
                                 }
                             }
@@ -143,8 +145,10 @@ fn entry_func() {
                     }
                 }
 
-                txq.tx(&mut batch);
-                Mempool::free_batch(&mut batch);
+                while o_batch.len() > 0 {
+                    // println!("try to send {} packets out", o_batch.len());
+                    txq.tx(&mut o_batch);
+                }
             }
         });
         jhs.push(jh);

@@ -12,9 +12,9 @@ use run_packet::Buf;
 use run_packet::Cursor;
 
 // The socket to work on
-const WORKING_SOCKET: u32 = 0;
+const WORKING_SOCKET: u32 = 1;
 const THREAD_NUM: u32 = 1;
-const START_CORE: usize = 1;
+const START_CORE: usize = 33;
 
 // dpdk batch size
 const BATCH_SIZE: usize = 64;
@@ -26,7 +26,7 @@ const MBUF_NUM: u32 = MBUF_CACHE * 32 * THREAD_NUM;
 const MP: &str = "wtf";
 
 // Basic configuration of the port
-const PORT_ID: u16 = 0;
+const PORT_ID: u16 = 1;
 const TXQ_DESC_NUM: u16 = 1024;
 const RXQ_DESC_NUM: u16 = 1024;
 

@@ -9,15 +9,17 @@ use run_dpdk::*;
 use run_packet::ether::*;
 use run_packet::ipv4::*;
 use run_packet::udp::UdpPacket;
+use run_packet::Buf;
 use run_packet::CursorMut;
+use run_packet::PktMut;
 
 // The socket to work on
 const WORKING_SOCKET: u32 = 1;
-const THREAD_NUM: u32 = 2;
+const THREAD_NUM: u32 = 1;
 const START_CORE: usize = 33;
 
 // dpdk batch size
-const BATCH_SIZE: usize = 64;
+const BATCH_SIZE: usize = 32;
 
 // Basic configuration of the mempool
 const MBUF_CACHE: u32 = 256;
@@ -25,17 +27,19 @@ const MBUF_NUM: u32 = MBUF_CACHE * 32 * THREAD_NUM;
 const MP_NAME: &str = "wtf";
 
 // Basic configuration of the port
-const PORT_ID: u16 = 0;
+const PORT_ID: u16 = 1;
 const TXQ_DESC_NUM: u16 = 1024;
 const RXQ_DESC_NUM: u16 = 1024;
 
 // header info
-const DMAC: [u8; 6] = [0x40, 0xa6, 0xb7, 0x60, 0xa2, 0xb1];
-const SMAC: [u8; 6] = [0x40, 0xa6, 0xb7, 0x60, 0xa5, 0xf8];
-const DIP: [u8; 4] = [192, 168, 22, 2];
+const DMAC: [u8; 6] = [0x08, 0x68, 0x8d, 0x61, 0x6b, 0xf8];
+const SMAC: [u8; 6] = [0x40, 0xa6, 0xb7, 0x60, 0xa2, 0xb1];
+const DIP: [u8; 4] = [1, 1, 2, 2];
 const SPORT: u16 = 60376;
 const DPORT: u16 = 161;
 const NUM_FLOWS: usize = 8192;
+
+const PACKET_LEN: usize = 60;
 
 static IP_ADDRS: OnceCell<Vec<[u8; 4]>> = OnceCell::new();
 
@@ -91,10 +95,10 @@ fn entry_func() {
             let mut rxq = service().rx_queue(PORT_ID, i as u16).unwrap();
             let mut txq = service().tx_queue(PORT_ID, i as u16).unwrap();
             let mut batch = ArrayVec::<_, BATCH_SIZE>::new();
+            let mut o_batch = ArrayVec::<_, BATCH_SIZE>::new();
 
             let mut tx_of_flag = MbufTxOffload::ALL_DISABLED;
             tx_of_flag.enable_ip_cksum();
-            tx_of_flag.enable_udp_cksum();
 
             let ip_addrs = IP_ADDRS.get().unwrap();
             let mut adder: usize = 0;
@@ -102,38 +106,36 @@ fn entry_func() {
             while run_clone.load(Ordering::Acquire) {
                 rxq.rx(&mut batch);
 
-                for mbuf in batch.iter_mut() {
+                for mut mbuf in batch.drain(..) {
                     let buf = CursorMut::new(mbuf.data_mut());
-                    if let Ok(ethpkt) = EtherPacket::parse(buf) {
+                    if let Ok(mut ethpkt) = EtherPacket::parse(buf) {
                         if ethpkt.ethertype() == EtherType::IPV4 {
-                            let (mut eth_hdr, buf) = ethpkt.split();
-                            if let Ok(ippkt) = Ipv4Packet::parse(buf) {
-                                if ippkt.protocol() == IpProtocol::UDP {
-                                    let (mut ip_hdr, _, buf) = ippkt.split();
-                                    if let Ok(mut udppkt) = UdpPacket::parse(buf) {
-                                        eth_hdr.set_dest_mac(MacAddr(DMAC));
-                                        eth_hdr.set_source_mac(MacAddr(SMAC));
+                            ethpkt.set_dest_mac(MacAddr(DMAC));
+                            ethpkt.set_source_mac(MacAddr(SMAC));
+                            if let Ok(mut ippkt) = Ipv4Packet::parse(ethpkt.payload()) {
+                                ippkt.set_dest_ip(Ipv4Addr(DIP));
+                                ippkt.set_source_ip(Ipv4Addr(ip_addrs[adder % NUM_FLOWS]));
+                                let ip_hdr_len = ippkt.header_len();
+                                adder += 1;
 
-                                        ip_hdr.set_dest_ip(Ipv4Addr(DIP));
-                                        ip_hdr.set_source_ip(Ipv4Addr(ip_addrs[adder % NUM_FLOWS]));
-                                        let ip_hdr_len = ip_hdr.header_len();
-                                        adder += 1;
+                                if let Ok(mut udppkt) = UdpPacket::parse(ippkt.payload()) {
+                                    udppkt.set_dest_port(DPORT);
+                                    udppkt.set_source_port(SPORT);
 
-                                        udppkt.set_dest_port(DPORT);
-                                        udppkt.set_source_port(SPORT);
-
-                                        mbuf.set_tx_offload(tx_of_flag);
-                                        mbuf.set_l2_len(ETHER_HEADER_LEN as u64);
-                                        mbuf.set_l3_len(ip_hdr_len as u64);
-                                    }
+                                    mbuf.set_tx_offload(tx_of_flag);
+                                    mbuf.set_l2_len(ETHER_HEADER_LEN as u64);
+                                    mbuf.set_l3_len(ip_hdr_len as u64);
+                                    o_batch.push(mbuf);
                                 }
                             }
                         }
                     }
                 }
 
-                txq.tx(&mut batch);
-                Mempool::free_batch(&mut batch);
+                while o_batch.len() > 0 {
+                    // println!("try to send {} packets out", o_batch.len());
+                    txq.tx(&mut o_batch);
+                }
             }
         });
         jhs.push(jh);

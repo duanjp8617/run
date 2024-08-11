@@ -20,6 +20,7 @@ run-time = {path = "../run-time", package = "run-time"}
 run-packet = {path = "../run-packet", package = "run-packet"}
 ctrlc = { version = "3.0", features = ["termination"]}
 smoltcp = "0.8"
+pnet = "0.35"
 
 [[example]]
 name = "jumboframe_tx"

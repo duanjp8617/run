@@ -2,15 +2,23 @@ use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
 
 use arrayvec::ArrayVec;
 use ctrlc;
-use once_cell::sync::OnceCell;
 
+use pnet::packet::*;
+use pnet::util::MacAddr;
+
+use once_cell::sync::OnceCell;
 use run_dpdk::offload::MbufTxOffload;
 use run_dpdk::*;
-use run_packet::ether::*;
-use run_packet::ipv4::*;
-use run_packet::udp::*;
-use run_packet::Buf;
-use run_packet::CursorMut;
+
+// the following result is acuiqred without setting ip checksum value
+// nbcore      1         2        3        4          14       18
+// run         17.02   28.94    30.94     31
+// smoltcp     13.52   25.92    30.89     31
+
+// Another test it seems that pcie 3.0 and 4.0 have no significant differences
+// nbcore      1         2        3        4          14       18
+// run         16.80   27.94    30.94
+// smoltcp     12.63   24.91    30.22    30.05
 
 // The socket to work on
 const WORKING_SOCKET: u32 = 1;
@@ -18,14 +26,12 @@ const THREAD_NUM: u32 = 1;
 const START_CORE: usize = 33;
 
 // dpdk batch size
-const BATCH_SIZE: usize = 1;
+const BATCH_SIZE: usize = 32;
 
 // Basic configuration of the mempool
 const MBUF_CACHE: u32 = 256;
 const MBUF_NUM: u32 = MBUF_CACHE * 32 * THREAD_NUM;
-
-const TX_MP: &str = "tx";
-const RX_MP: &str = "rx";
+const MP_NAME: &str = "wtf";
 
 // Basic configuration of the port
 const PORT_ID: u16 = 1;
@@ -39,10 +45,6 @@ const DIP: [u8; 4] = [1, 1, 2, 2];
 const SPORT: u16 = 60376;
 const DPORT: u16 = 161;
 const NUM_FLOWS: usize = 8192;
-
-// payload info
-const PAYLOAD_BYTE: u8 = 0xae;
-const PACKET_LEN: usize = 60;
 
 static IP_ADDRS: OnceCell<Vec<[u8; 4]>> = OnceCell::new();
 
@@ -66,33 +68,7 @@ fn gen_ip_addrs(fst: u8, snd: u8, size: usize) -> Vec<[u8; 4]> {
     v
 }
 
-fn fill_packet_template() {
-    let mut v = vec![PAYLOAD_BYTE; PACKET_LEN];
-
-    let mut pbuf = CursorMut::new(&mut v[..]);
-    pbuf.advance(ETHER_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN);
-
-    let mut udp_pkt = UdpPacket::prepend_header(pbuf, &UDP_HEADER_TEMPLATE);
-    udp_pkt.set_source_port(SPORT);
-    udp_pkt.set_dest_port(DPORT);
-
-    let mut ipv4_pkt = Ipv4Packet::prepend_header(udp_pkt.release(), &IPV4_HEADER_TEMPLATE);
-    ipv4_pkt.set_source_ip(Ipv4Addr([0, 0, 0, 0]));
-    ipv4_pkt.set_dest_ip(Ipv4Addr(DIP));
-    ipv4_pkt.set_protocol(IpProtocol::UDP);
-    ipv4_pkt.set_time_to_live(128);
-
-    let mut eth_pkt = EtherPacket::prepend_header(ipv4_pkt.release(), &ETHER_HEADER_TEMPLATE);
-    eth_pkt.set_source_mac(MacAddr(SMAC));
-    eth_pkt.set_dest_mac(MacAddr(DMAC));
-    eth_pkt.set_ethertype(EtherType::IPV4);
-
-    utils::fill_mempool(TX_MP, &v[..]).unwrap();
-}
-
 fn entry_func() {
-    fill_packet_template();
-
     IP_ADDRS.get_or_init(|| gen_ip_addrs(192, 168, NUM_FLOWS));
 
     // make sure that the rx and tx threads are on the correct cores
@@ -117,46 +93,65 @@ fn entry_func() {
 
     for i in 0..THREAD_NUM as usize {
         let run_clone = run.clone();
+
         let jh = std::thread::spawn(move || {
             service().lcore_bind(i as u32 + START_CORE as u32).unwrap();
 
-            let mut txq = service().tx_queue(PORT_ID, i as u16).unwrap();
-            let tx_mp = service().mempool(TX_MP).unwrap();
-            let mut tx_batch = ArrayVec::<_, BATCH_SIZE>::new();
-
             let mut rxq = service().rx_queue(PORT_ID, i as u16).unwrap();
-            let mut rx_batch = ArrayVec::<_, BATCH_SIZE>::new();
+            let mut txq = service().tx_queue(PORT_ID, i as u16).unwrap();
+            let mut batch = ArrayVec::<_, BATCH_SIZE>::new();
+            let mut o_batch = ArrayVec::<_, BATCH_SIZE>::new();
 
             let mut tx_of_flag = MbufTxOffload::ALL_DISABLED;
             tx_of_flag.enable_ip_cksum();
 
             let ip_addrs = IP_ADDRS.get().unwrap();
             let mut adder: usize = 0;
+            let dest_ip = std::net::Ipv4Addr::new(DIP[0], DIP[1], DIP[2], DIP[3]);
+            let dmac = MacAddr(DMAC[0], DMAC[1], DMAC[2], DMAC[3], DMAC[4], DMAC[5]);
+            let smac = MacAddr(SMAC[0], SMAC[1], SMAC[2], SMAC[3], SMAC[4], SMAC[5]);
 
             while run_clone.load(Ordering::Acquire) {
-                std::thread::sleep(std::time::Duration::from_secs(1));
-                tx_mp.fill_batch(&mut tx_batch);
+                rxq.rx(&mut batch);
 
-                for mbuf in tx_batch.iter_mut() {
-                    unsafe { mbuf.extend(PACKET_LEN) };
+                for mut mbuf in batch.drain(..) {
+                    if let Some(mut ethpkt) = ethernet::MutableEthernetPacket::new(mbuf.data_mut())
+                    {
+                        if ethpkt.get_ethertype() == ethernet::EtherTypes::Ipv4 {
+                            if let Some(mut ippkt) =
+                                ipv4::MutableIpv4Packet::new(ethpkt.payload_mut())
+                            {
+                                if ippkt.get_next_level_protocol() == ip::IpNextHeaderProtocols::Udp {
+                                    if let Some(mut udppkt) =
+                                    udp::MutableUdpPacket::new(ippkt.payload_mut())
+                                    {
+                                        udppkt.set_destination(DPORT);
+                                        udppkt.set_source(SPORT);
 
-                    let mut buf = CursorMut::new(mbuf.data_mut());
-                    buf.advance(ETHER_HEADER_LEN);
+                                        ippkt.set_destination(dest_ip);
+                                        let src_ip = ip_addrs[adder % NUM_FLOWS];
+                                        ippkt.set_source(std::net::Ipv4Addr::from(src_ip));
+                                        adder += 1;
 
-                    let mut ipv4_pkt = Ipv4Packet::parse_unchecked(buf);
-                    ipv4_pkt.set_source_ip(Ipv4Addr(ip_addrs[adder % NUM_FLOWS]));
-                    adder += 1;
-                    // ipv4_pkt.adjust_checksum();
-            
-                    mbuf.set_tx_offload(tx_of_flag);
-                    mbuf.set_l2_len(ETHER_HEADER_LEN as u64);
-                    mbuf.set_l3_len(IPV4_HEADER_LEN as u64);
+                                        ethpkt.set_destination(dmac);
+                                        ethpkt.set_source(smac);
+
+                                        mbuf.set_tx_offload(tx_of_flag);
+                                        mbuf.set_l2_len(14 as u64);
+                                        mbuf.set_l3_len(20 as u64);
+
+                                        o_batch.push(mbuf);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-                let _ = txq.tx(&mut tx_batch);
-                Mempool::free_batch(&mut tx_batch);
 
-                rxq.rx(&mut rx_batch);
-                Mempool::free_batch(&mut rx_batch);
+                while o_batch.len() > 0 {
+                    // println!("try to send {} packets out", o_batch.len());
+                    txq.tx(&mut o_batch);
+                }
             }
         });
         jhs.push(jh);
@@ -169,11 +164,11 @@ fn entry_func() {
         std::thread::sleep(std::time::Duration::from_secs(1));
         stats_query.update(&mut curr_stats);
         println!(
-            "tx: {} Mpps, {} Gbps || rx: {} Mpps, {} Gbps",
-            (curr_stats.opackets() - old_stats.opackets()) as f64 / 1_000_000.0,
-            (curr_stats.obytes() - old_stats.obytes()) as f64 * 8.0 / 1_000_000_000.0,
+            "rx: {} Mpps, {} Gbps || tx: {} Mpps, {} Gbps",
             (curr_stats.ipackets() - old_stats.ipackets()) as f64 / 1_000_000.0,
             (curr_stats.ibytes() - old_stats.ibytes()) as f64 * 8.0 / 1_000_000_000.0,
+            (curr_stats.opackets() - old_stats.opackets()) as f64 / 1_000_000.0,
+            (curr_stats.obytes() - old_stats.obytes()) as f64 * 8.0 / 1_000_000_000.0,
         );
 
         old_stats = curr_stats;
@@ -188,8 +183,7 @@ fn main() {
     DpdkOption::new().init().unwrap();
 
     // create mempool
-    utils::init_mempool(TX_MP, MBUF_NUM, MBUF_CACHE, WORKING_SOCKET).unwrap();
-    utils::init_mempool(RX_MP, MBUF_NUM, MBUF_CACHE, WORKING_SOCKET).unwrap();
+    utils::init_mempool(MP_NAME, MBUF_NUM, MBUF_CACHE, WORKING_SOCKET).unwrap();
 
     // create the port
     utils::init_port(
@@ -197,7 +191,7 @@ fn main() {
         THREAD_NUM as u16,
         THREAD_NUM as u16,
         RXQ_DESC_NUM,
-        RX_MP,
+        MP_NAME,
         TXQ_DESC_NUM,
         WORKING_SOCKET,
     )
@@ -209,8 +203,7 @@ fn main() {
     service().port_close(PORT_ID).unwrap();
 
     // free the mempool
-    service().mempool_free(TX_MP).unwrap();
-    service().mempool_free(RX_MP).unwrap();
+    service().mempool_free(MP_NAME).unwrap();
 
     // shutdown the DPDK service
     service().service_close().unwrap();
