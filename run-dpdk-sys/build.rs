@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str;
 
-const DPDK_VERSION: &str = "21.11";
-const DPDK_GIT_REPO: &str = "https://dpdk.org/git/dpdk";
+const DPDK_VERSION: &str = "23.07";
+const DPDK_GIT_REPO: &str = "https://github.com/DPDK/dpdk.git";
 
 // On Ubuntu server, we need the following packages:
 // 1. meson (apt install meson) for meson build
