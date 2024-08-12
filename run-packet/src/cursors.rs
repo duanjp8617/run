@@ -23,11 +23,6 @@ impl<'a> Cursor<'a> {
     }
 
     #[inline]
-    pub fn chunk_shared_lifetime(&self) -> &'a [u8] {
-        self.chunk
-    }
-
-    #[inline]
     pub fn cursor(&self) -> usize {
         unsafe { self.chunk.as_ptr().offset_from(self.start_addr) as usize }
     }
@@ -90,7 +85,7 @@ impl<'a> CursorMut<'a> {
     }
 
     #[inline]
-    pub fn chunk_mut_shared_lifetime(self) -> &'a mut [u8] {
+    pub fn unwrap_chunk(self) -> &'a mut [u8] {
         self.chunk
     }
 

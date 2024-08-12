@@ -116,27 +116,25 @@ impl<T: PktMut> UdpPacket<T> {
 
 impl<'a> UdpPacket<Cursor<'a>> {
     #[inline]
-    pub fn cursor_header(&self) -> UdpHeader<&'a [u8]> {
-        let data = &self.buf.chunk_shared_lifetime()[..UDP_HEADER_LEN];
-        UdpHeader::new_unchecked(data)
-    }
-
-    #[inline]
-    pub fn cursor_payload(&self) -> Cursor<'a> {
-        Cursor::new(
-            &self.buf.chunk_shared_lifetime()[UDP_HEADER_LEN..usize::from(self.packet_len())],
-        )
+    pub fn cursor_payload(&self) -> Cursor<'_> {
+        Cursor::new(&self.buf.chunk()[UDP_HEADER_LEN..usize::from(self.packet_len())])
     }
 }
 
 impl<'a> UdpPacket<CursorMut<'a>> {
     #[inline]
-    pub fn split(self) -> (UdpHeader<&'a mut [u8]>, CursorMut<'a>) {
+    pub fn cursor_payload_mut(&mut self) -> CursorMut<'_> {
+        let packet_len = usize::from(self.packet_len());
+        CursorMut::new(&mut self.buf.chunk_mut()[UDP_HEADER_LEN..packet_len])
+    }
+
+    #[inline]
+    pub fn unwrap_packet(self) -> (UdpHeader<&'a mut [u8]>, CursorMut<'a>) {
         let packet_len = self.packet_len();
 
         let (buf_mut, _) = self
             .buf
-            .chunk_mut_shared_lifetime()
+            .unwrap_chunk()
             .split_at_mut(usize::from(packet_len));
         let (hdr, payload) = buf_mut.split_at_mut(UDP_HEADER_LEN);
 
@@ -245,13 +243,13 @@ mod tests {
         let buf = Cursor::new(&FRAME_BYTES[..]);
 
         let ethpkt = EtherPacket::parse(buf).unwrap();
-        let eth_hdr = ethpkt.cursor_header();
+        let eth_hdr = ethpkt.header();
 
-        let ipv4_pkt = Ipv4Packet::parse(ethpkt.payload()).unwrap();
-        let ipv4_hdr = ipv4_pkt.cursor_header();
+        let ipv4_pkt = Ipv4Packet::parse(ethpkt.cursor_payload()).unwrap();
+        let ipv4_hdr = ipv4_pkt.header();
 
-        let udp_pkt = UdpPacket::parse(ipv4_pkt.payload()).unwrap();
-        let udp_hdr = udp_pkt.cursor_header();
+        let udp_pkt = UdpPacket::parse(ipv4_pkt.cursor_payload()).unwrap();
+        let udp_hdr = udp_pkt.header();
 
         assert_eq!(eth_hdr.ethertype(), EtherType::IPV4);
         assert_eq!(ipv4_hdr.protocol(), IpProtocol::UDP);
@@ -266,16 +264,16 @@ mod tests {
         let pkt = CursorMut::new(&mut buf[..]);
 
         let ethpkt = EtherPacket::parse(pkt).unwrap();
-        let (eth_hdr, payload) = ethpkt.split();
+        let (eth_hdr, payload) = ethpkt.unwrap_packet();
 
         let ippkt = Ipv4Packet::parse(payload).unwrap();
         let ip_hdr_cursor = ippkt.buf().cursor() + eth_hdr.as_bytes().len();
 
-        let (mut ip_hdr, _, payload) = ippkt.split();
+        let (mut ip_hdr, _, payload) = ippkt.unwrap_packet();
         let udp_hdr_cursor = ip_hdr_cursor + usize::from(ip_hdr.header_len());
 
         let udppkt = UdpPacket::parse(payload).unwrap();
-        let (mut udp_hdr, _) = udppkt.split();
+        let (mut udp_hdr, _) = udppkt.unwrap_packet();
 
         ip_hdr.set_source_ip(Ipv4Addr([127, 0, 0, 1]));
         udp_hdr.set_source_port(1024);
