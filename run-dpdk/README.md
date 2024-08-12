@@ -87,3 +87,23 @@ To check whether ice driver version is correctly upgraded, use the following com
 modinfo ice
 sudo ethtool -i DEVICE_NAME
 ```
+
+Updating Firmware:
+
+Add details on how to update firmware
+
+## Rustc version
+
+Currently we should use rust version 1.68.0 to get the significant leading performance.
+
+To compile with 1.68.0, one needs to first switch the toolchain to 1.68.0 with:
+```shell
+rustup default 1.68.0
+```
+
+Then, during compilation, some potential dependency errors may occur, we can fix them with:
+```shell
+cargo update -p ctrlc --precise 3.2.4
+cargo update -p home --precise 0.5.5
+```
+
