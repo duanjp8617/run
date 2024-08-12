@@ -110,17 +110,19 @@ fn entry_func() {
                     let buf = CursorMut::new(mbuf.data_mut());
                     if let Ok(mut ethpkt) = EtherPacket::parse(buf) {
                         if ethpkt.ethertype() == EtherType::IPV4 {
-                            ethpkt.set_dest_mac(MacAddr(DMAC));
-                            ethpkt.set_source_mac(MacAddr(SMAC));
-                            if let Ok(mut ippkt) = Ipv4Packet::parse(ethpkt.payload()) {
-                                ippkt.set_dest_ip(Ipv4Addr(DIP));
-                                ippkt.set_source_ip(Ipv4Addr(ip_addrs[adder % NUM_FLOWS]));
-                                let ip_hdr_len = ippkt.header_len();
-                                adder += 1;
-
-                                if let Ok(mut udppkt) = UdpPacket::parse(ippkt.payload()) {
+                            if let Ok(mut ippkt) = Ipv4Packet::parse(ethpkt.cursor_payload_mut()) {
+                                if let Ok(mut udppkt) = UdpPacket::parse(ippkt.cursor_payload_mut())
+                                {
                                     udppkt.set_dest_port(DPORT);
                                     udppkt.set_source_port(SPORT);
+
+                                    ippkt.set_dest_ip(Ipv4Addr(DIP));
+                                    ippkt.set_source_ip(Ipv4Addr(ip_addrs[adder % NUM_FLOWS]));
+                                    let ip_hdr_len = ippkt.header_len();
+                                    adder += 1;
+
+                                    ethpkt.set_dest_mac(MacAddr(DMAC));
+                                    ethpkt.set_source_mac(MacAddr(SMAC));
 
                                     mbuf.set_tx_offload(tx_of_flag);
                                     mbuf.set_l2_len(ETHER_HEADER_LEN as u64);
