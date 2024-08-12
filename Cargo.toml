@@ -6,4 +6,5 @@ members = [
   "run-dpdk",
   "run-time",
   "examples",
+  "codegen_test"
 ]
