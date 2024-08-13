@@ -22,7 +22,7 @@ use run_dpdk::*;
 
 // The socket to work on
 const WORKING_SOCKET: u32 = 1;
-const THREAD_NUM: u32 = 1;
+const THREAD_NUM: u32 = 4;
 const START_CORE: usize = 33;
 
 // dpdk batch size

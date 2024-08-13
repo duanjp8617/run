@@ -21,7 +21,7 @@ use run_dpdk::*;
 
 // The socket to work on
 const WORKING_SOCKET: u32 = 1;
-const THREAD_NUM: u32 = 1;
+const THREAD_NUM: u32 = 4;
 const START_CORE: usize = 33;
 
 // dpdk batch size
@@ -129,6 +129,7 @@ fn entry_func() {
                                         ));
                                         let ip_hdr_len = ippkt.header_len();
                                         adder += 1;
+                                        // ippkt.fill_checksum();
 
                                         ethpkt.set_dst_addr(wire::EthernetAddress(DMAC));
                                         ethpkt.set_src_addr(wire::EthernetAddress(SMAC));

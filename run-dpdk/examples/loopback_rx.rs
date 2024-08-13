@@ -15,7 +15,7 @@ use run_packet::PktMut;
 
 // The socket to work on
 const WORKING_SOCKET: u32 = 1;
-const THREAD_NUM: u32 = 1;
+const THREAD_NUM: u32 = 4;
 const START_CORE: usize = 33;
 
 // dpdk batch size
@@ -111,23 +111,26 @@ fn entry_func() {
                     if let Ok(mut ethpkt) = EtherPacket::parse(buf) {
                         if ethpkt.ethertype() == EtherType::IPV4 {
                             if let Ok(mut ippkt) = Ipv4Packet::parse(ethpkt.cursor_payload_mut()) {
-                                if let Ok(mut udppkt) = UdpPacket::parse(ippkt.cursor_payload_mut())
-                                {
-                                    udppkt.set_dest_port(DPORT);
-                                    udppkt.set_source_port(SPORT);
-
-                                    ippkt.set_dest_ip(Ipv4Addr(DIP));
-                                    ippkt.set_source_ip(Ipv4Addr(ip_addrs[adder % NUM_FLOWS]));
-                                    let ip_hdr_len = ippkt.header_len();
-                                    adder += 1;
-
-                                    ethpkt.set_dest_mac(MacAddr(DMAC));
-                                    ethpkt.set_source_mac(MacAddr(SMAC));
-
-                                    mbuf.set_tx_offload(tx_of_flag);
-                                    mbuf.set_l2_len(ETHER_HEADER_LEN as u64);
-                                    mbuf.set_l3_len(ip_hdr_len as u64);
-                                    o_batch.push(mbuf);
+                                if ippkt.protocol() == IpProtocol::UDP {
+                                    if let Ok(mut udppkt) = UdpPacket::parse(ippkt.cursor_payload_mut()) {
+                                        udppkt.set_dest_port(DPORT);
+                                        udppkt.set_source_port(SPORT);
+            
+                                        ippkt.set_dest_ip(Ipv4Addr(DIP));
+                                        ippkt.set_source_ip(Ipv4Addr(ip_addrs[adder % NUM_FLOWS]));
+                                        adder += 1;
+                                        let ip_hdr_len = ippkt.header_len();
+                                        // ippkt.adjust_checksum();
+            
+                                        ethpkt.set_dest_mac(MacAddr(DMAC));
+                                        ethpkt.set_source_mac(MacAddr(SMAC));
+            
+                                        mbuf.set_tx_offload(tx_of_flag);
+                                        mbuf.set_l2_len(ETHER_HEADER_LEN as u64);
+                                        mbuf.set_l3_len(ip_hdr_len as u64);
+                                        
+                                        o_batch.push(mbuf);
+                                    }
                                 }
                             }
                         }
