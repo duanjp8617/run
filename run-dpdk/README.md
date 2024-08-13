@@ -103,6 +103,7 @@ rustup default 1.68.0
 
 Then, during compilation, some potential dependency errors may occur, we can fix them with:
 ```shell
+cargo update -p nix@0.28.0 --precise 0.26.4
 cargo update -p ctrlc --precise 3.2.4
 cargo update -p home --precise 0.5.5
 ```
